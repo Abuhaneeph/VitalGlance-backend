@@ -551,8 +551,8 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
 
     // Add medical disclaimers
     response.disclaimers = [
-      'This data is for informational purposes only',
-      'Glucose values are simulated for demonstration purposes',
+      'This data is for educational purposes only',
+      'Glucose values are predicted for educational purposes',
       'Consult healthcare provider for medical decisions',
       'Sensor accuracy may vary based on placement and conditions',
       'Values have been simulated to show healthy ranges'
