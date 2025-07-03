@@ -814,5 +814,5 @@ app.listen(PORT, '0.0.0.0', () => {
     }).on('error', (err) => {
       console.error('Ping failed:', err);
     });
-  }, 5 * 60 * 1000); // Ping every 5 minutes
+  }, 12 * 60 * 1000); // Ping every 5 minutes
 });
