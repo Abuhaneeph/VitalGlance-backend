@@ -793,10 +793,7 @@ process.on('SIGINT', () => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Sensor Data API Server running on port ${PORT}`);
   console.log(`📊 Total records loaded: ${sensorData.length}`);
-  console.log(`🤖 ML Model available: ${!!findLatestModel()}`);
-  if (findLatestModel()) {
-    console.log(`📁 Using model: ${path.basename(findLatestModel())}`);
-  }
+ 
   console.log(`🌐 Server accessible at: http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log('\n📋 Available endpoints:');
