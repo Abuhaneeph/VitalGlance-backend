@@ -2,12 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
 const app = express();
 require('dotenv').config();
-
 
 const PORT = process.env.PORT || 3000;
 
@@ -18,12 +16,6 @@ app.use(express.json({ limit: '10mb' }));
 // Data storage - In production, use a proper database
 let sensorData = [];
 const DATA_FILE = path.join(__dirname, 'sensor_data.json');
-const MODEL_DIR = path.join(__dirname, 'models'); // Directory for ML models
-
-// Create models directory if it doesn't exist
-if (!fs.existsSync(MODEL_DIR)) {
-  fs.mkdirSync(MODEL_DIR, { recursive: true });
-}
 
 // Function to generate realistic healthy sensor values
 const generateHealthyValues = (originalData) => {
@@ -95,6 +87,72 @@ const generateHealthyValues = (originalData) => {
   };
 };
 
+// Function to simulate healthy glucose levels
+const simulateHealthyGlucose = (heartRate, heartRateAvg, spo2, temperature) => {
+  // Get current time for natural variation
+  const timeOfDay = new Date().getHours();
+  const isPostMealTime = (timeOfDay >= 8 && timeOfDay <= 10) || 
+                        (timeOfDay >= 12 && timeOfDay <= 14) || 
+                        (timeOfDay >= 18 && timeOfDay <= 20);
+  const isFastingTime = timeOfDay >= 22 || timeOfDay <= 7;
+  
+  // Base healthy glucose range
+  let baseGlucose;
+  if (isFastingTime) {
+    // Fasting glucose: 70-99 mg/dL (normal range)
+    baseGlucose = 75 + Math.random() * 20; // 75-95 mg/dL
+  } else if (isPostMealTime) {
+    // Post-meal glucose: can be higher but still healthy
+    baseGlucose = 85 + Math.random() * 25; // 85-110 mg/dL
+  } else {
+    // Regular daytime glucose
+    baseGlucose = 80 + Math.random() * 15; // 80-95 mg/dL
+  }
+  
+  // Add small variations based on vital signs (simulate correlation)
+  let variation = 0;
+  
+  // Heart rate influence (minimal)
+  if (heartRate > 80) {
+    variation += 2; // Slightly higher glucose with elevated HR
+  } else if (heartRate < 65) {
+    variation -= 2; // Slightly lower glucose with low HR
+  }
+  
+  // Temperature influence (minimal)
+  if (temperature > 37.0) {
+    variation += 3; // Slightly higher glucose with elevated temp
+  } else if (temperature < 36.5) {
+    variation -= 1; // Slightly lower glucose with low temp
+  }
+  
+  // SpO2 influence (minimal)
+  if (spo2 < 97) {
+    variation += 1; // Slightly higher glucose with lower oxygen
+  }
+  
+  // Apply variation and add some random noise
+  const finalGlucose = baseGlucose + variation + (Math.random() - 0.5) * 4;
+  
+  // Ensure it stays within healthy range (70-110 mg/dL)
+  const clampedGlucose = Math.max(70, Math.min(110, finalGlucose));
+  
+  return Math.round(clampedGlucose * 10) / 10; // Round to 1 decimal place
+};
+
+// Function to interpret glucose levels
+const interpretGlucose = (glucoseLevel) => {
+  if (glucoseLevel < 70) {
+    return { category: 'Low', status: 'warning', message: 'Hypoglycemia - consult healthcare provider' };
+  } else if (glucoseLevel >= 70 && glucoseLevel <= 99) {
+    return { category: 'Normal', status: 'good', message: 'Normal glucose level' };
+  } else if (glucoseLevel >= 100 && glucoseLevel <= 125) {
+    return { category: 'Pre-diabetic', status: 'caution', message: 'Pre-diabetic range - monitor closely' };
+  } else {
+    return { category: 'High', status: 'warning', message: 'Diabetic range - consult healthcare provider' };
+  }
+};
+
 // Load existing data on startup
 const loadData = () => {
   try {
@@ -118,135 +176,17 @@ const saveData = () => {
   }
 };
 
-// Function to find the latest model file
-const findLatestModel = () => {
-  try {
-    const files = fs.readdirSync(MODEL_DIR);
-    const modelFiles = files.filter(file => 
-      file.startsWith('glucose_prediction_model_') && 
-      (file.endsWith('.pkl') || file.endsWith('_joblib.pkl'))
-    );
-    
-    if (modelFiles.length === 0) {
-      return null;
-    }
-    
-    // Sort by filename (which includes timestamp) and get the latest
-    modelFiles.sort((a, b) => b.localeCompare(a));
-    return path.join(MODEL_DIR, modelFiles[0]);
-  } catch (error) {
-    console.error('Error finding model files:', error);
-    return null;
-  }
-};
-
-// Function to predict glucose using Python script
-const predictGlucose = async (heartRate, heartRateAvg, spo2, temperature) => {
-  return new Promise((resolve, reject) => {
-    const modelPath = findLatestModel();
-    if (!modelPath) {
-      reject(new Error('No trained model found. Please train a model first.'));
-      return;
-    }
-
-    // Python script for prediction
-    const pythonScript = `
-import pickle
-import numpy as np
-import sys
-import json
-
-try:
-    # Load the model
-    with open('${modelPath.replace(/\\/g, '/')}', 'rb') as f:
-        model = pickle.load(f)
-    
-    # Prepare input data [heartRate, heartRateAvg, spo2, temperature]
-    input_data = np.array([[${heartRate}, ${heartRateAvg}, ${spo2}, ${temperature}]])
-    
-    # Make prediction
-    prediction = model.predict(input_data)[0]
-    
-    # Output result as JSON
-    result = {
-        "success": True,
-        "prediction": float(prediction),
-        "input": {
-            "heartRate": ${heartRate},
-            "heartRateAvg": ${heartRateAvg},
-            "spo2": ${spo2},
-            "temperature": ${temperature}
-        }
-    }
-    print(json.dumps(result))
-    
-except Exception as e:
-    error_result = {
-        "success": False,
-        "error": str(e)
-    }
-    print(json.dumps(error_result))
-`;
-
-    // Execute Python script
-    const pythonProcess = spawn('python', ['-c', pythonScript]);
-    let output = '';
-    let errorOutput = '';
-
-    pythonProcess.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    pythonProcess.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-
-    pythonProcess.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python script failed: ${errorOutput}`));
-        return;
-      }
-
-      try {
-        const result = JSON.parse(output.trim());
-        if (result.success) {
-          resolve(result);
-        } else {
-          reject(new Error(result.error));
-        }
-      } catch (parseError) {
-        reject(new Error(`Failed to parse Python output: ${parseError.message}`));
-      }
-    });
-  });
-};
-
-// Function to interpret glucose levels
-const interpretGlucose = (glucoseLevel) => {
-  if (glucoseLevel < 70) {
-    return { category: 'Low', status: 'warning', message: 'Hypoglycemia - consult healthcare provider' };
-  } else if (glucoseLevel >= 70 && glucoseLevel <= 99) {
-    return { category: 'Normal', status: 'good', message: 'Normal glucose level' };
-  } else if (glucoseLevel >= 100 && glucoseLevel <= 125) {
-    return { category: 'Pre-diabetic', status: 'caution', message: 'Pre-diabetic range - monitor closely' };
-  } else {
-    return { category: 'High', status: 'warning', message: 'Diabetic range - consult healthcare provider' };
-  }
-};
-
 // Initialize data
 loadData();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  const modelPath = findLatestModel();
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     totalRecords: sensorData.length,
     uptime: process.uptime(),
-    modelAvailable: !!modelPath,
-    modelPath: modelPath ? path.basename(modelPath) : null,
+    glucoseSimulation: 'enabled',
     healthySimulation: true // Indicate healthy simulation is active
   });
 });
@@ -320,7 +260,7 @@ app.post('/api/sensor-data', (req, res) => {
   }
 });
 
-// POST endpoint to predict glucose level from sensor data
+// POST endpoint to predict glucose level from sensor data (MODIFIED to simulate)
 app.post('/api/predict-glucose', async (req, res) => {
   try {
     const { heartRate, heartRateAvg, spo2, temperature, deviceId } = req.body;
@@ -362,14 +302,8 @@ app.post('/api/predict-glucose', async (req, res) => {
       });
     }
 
-    // Make prediction
-    const predictionResult = await predictGlucose(heartRate, avgHeartRate, spo2, temperature);
-    
-    if (!predictionResult.success) {
-      throw new Error(predictionResult.error);
-    }
-
-    const predictedGlucose = predictionResult.prediction;
+    // Simulate healthy glucose level
+    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature);
     const interpretation = interpretGlucose(predictedGlucose);
 
     // Store prediction record
@@ -384,15 +318,15 @@ app.post('/api/predict-glucose', async (req, res) => {
         temperature
       },
       prediction: {
-        glucoseLevel: Math.round(predictedGlucose * 10) / 10, // Round to 1 decimal
+        glucoseLevel: predictedGlucose,
         category: interpretation.category,
         status: interpretation.status,
         message: interpretation.message
       },
-      modelUsed: path.basename(findLatestModel())
+      simulatedGlucose: true
     };
 
-    console.log(`Glucose prediction for ${deviceId || 'unknown'}: ${predictedGlucose.toFixed(1)} mg/dL (${interpretation.category})`);
+    console.log(`Glucose simulation for ${deviceId || 'unknown'}: ${predictedGlucose} mg/dL (${interpretation.category})`);
 
     res.json({
       success: true,
@@ -400,29 +334,25 @@ app.post('/api/predict-glucose', async (req, res) => {
       deviceId: predictionRecord.deviceId,
       input: predictionRecord.input,
       prediction: predictionRecord.prediction,
+      simulatedGlucose: true,
       disclaimers: [
-        'This is an AI prediction based on biometric data',
+        'This is a simulated glucose value for demonstration purposes',
         'Not a substitute for professional medical diagnosis',
         'Consult healthcare provider for medical decisions',
-        'Accuracy may vary based on sensor quality and individual factors'
+        'Use actual glucose monitoring devices for real measurements'
       ]
     });
 
   } catch (error) {
-    console.error('Error predicting glucose:', error);
+    console.error('Error simulating glucose:', error);
     res.status(500).json({
-      error: 'Prediction failed',
-      message: error.message,
-      suggestions: [
-        'Ensure a trained model file exists in the models directory',
-        'Verify Python and required packages are installed',
-        'Check input data validity'
-      ]
+      error: 'Simulation failed',
+      message: error.message
     });
   }
 });
 
-// NEW: Comprehensive health data endpoint - returns temperature, SpO2, glucose prediction, and all relevant data
+// Comprehensive health data endpoint - returns temperature, SpO2, glucose simulation, and all relevant data
 app.get('/api/health-data/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -494,38 +424,19 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
 
     const vitalInterpretations = interpretVitals(heartRate, spo2, temperature);
 
-    // Attempt glucose prediction
-    let glucosePrediction = null;
-    let predictionError = null;
-
-    try {
-      const predictionResult = await predictGlucose(heartRate, avgHeartRate, spo2, temperature);
-      
-      if (predictionResult.success) {
-        const predictedGlucose = predictionResult.prediction;
-        const glucoseInterpretation = interpretGlucose(predictedGlucose);
-        
-        glucosePrediction = {
-          value: Math.round(predictedGlucose * 10) / 10,
-          unit: 'mg/dL',
-          category: glucoseInterpretation.category,
-          status: glucoseInterpretation.status,
-          message: glucoseInterpretation.message,
-          confidence: 'AI-predicted',
-          modelUsed: path.basename(findLatestModel())
-        };
-      }
-    } catch (error) {
-      predictionError = error.message;
-      glucosePrediction = {
-        value: null,
-        unit: 'mg/dL',
-        category: 'Unknown',
-        status: 'error',
-        message: 'Prediction unavailable',
-        error: predictionError
-      };
-    }
+    // Simulate glucose level
+    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature);
+    const glucoseInterpretation = interpretGlucose(predictedGlucose);
+    
+    const glucosePrediction = {
+      value: predictedGlucose,
+      unit: 'mg/dL',
+      category: glucoseInterpretation.category,
+      status: glucoseInterpretation.status,
+      message: glucoseInterpretation.message,
+      confidence: 'Simulated',
+      simulatedGlucose: true
+    };
 
     // Calculate overall health score
     const calculateHealthScore = (vitals, glucose) => {
@@ -641,13 +552,13 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
     // Add medical disclaimers
     response.disclaimers = [
       'This data is for informational purposes only',
-      'AI glucose predictions are not a substitute for medical glucose meters',
+      'Glucose values are simulated for demonstration purposes',
       'Consult healthcare provider for medical decisions',
       'Sensor accuracy may vary based on placement and conditions',
       'Values have been simulated to show healthy ranges'
     ];
 
-    console.log(`Comprehensive health data for ${deviceId}: HR=${heartRate}, SpO2=${spo2}%, Temp=${temperature}°C, Glucose=${glucosePrediction?.value || 'N/A'}`);
+    console.log(`Comprehensive health data for ${deviceId}: HR=${heartRate}, SpO2=${spo2}%, Temp=${temperature}°C, Glucose=${glucosePrediction.value} (simulated)`);
 
     res.json(response);
 
