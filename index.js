@@ -6,6 +6,9 @@ const { spawn } = require('child_process');
 const http = require('http');
 const https = require('https');
 const app = express();
+require('dotenv').config();
+
+
 const PORT = process.env.PORT || 3000;
 
 // Middleware
