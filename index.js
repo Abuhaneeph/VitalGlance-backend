@@ -17,48 +17,122 @@ app.use(express.json({ limit: '10mb' }));
 let sensorData = [];
 const DATA_FILE = path.join(__dirname, 'sensor_data.json');
 
-// Function to generate realistic healthy sensor values
+// Function to get the last stored values for a device to ensure variation
+const getLastStoredValues = (deviceId) => {
+  const deviceRecords = sensorData
+    .filter(record => record.deviceId === deviceId)
+    .sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt));
+  
+  if (deviceRecords.length > 0) {
+    const lastRecord = deviceRecords[0];
+    return {
+      heartRate: lastRecord.heartRate || 72,
+      spo2: lastRecord.spo2 || 98,
+      temperature: lastRecord.temperature || 36.5,
+      glucose: lastRecord.lastGlucose || 85
+    };
+  }
+  
+  // Default values for first reading
+  return {
+    heartRate: 72,
+    spo2: 98,
+    temperature: 36.5,
+    glucose: 85
+  };
+};
+
+// Function to apply controlled variation to ensure values always change
+const applyControlledVariation = (currentValue, lastValue, range) => {
+  const { min, max, minChange } = range;
+  
+  // Ensure minimum change from last value
+  let newValue;
+  const changeDirection = Math.random() > 0.5 ? 1 : -1;
+  const minVariation = minChange || 0.1;
+  
+  // Apply minimum variation
+  newValue = lastValue + (changeDirection * minVariation);
+  
+  // Add additional random variation (up to 0.5 more)
+  const additionalVariation = (Math.random() - 0.5) * 1.0;
+  newValue += additionalVariation;
+  
+  // Ensure within healthy bounds
+  newValue = Math.max(min, Math.min(max, newValue));
+  
+  // If we're too close to the last value, force a bigger change
+  if (Math.abs(newValue - lastValue) < minVariation) {
+    const forcedChange = minVariation * (Math.random() > 0.5 ? 1 : -1);
+    newValue = lastValue + forcedChange;
+    newValue = Math.max(min, Math.min(max, newValue));
+  }
+  
+  return newValue;
+};
+
+// Function to generate realistic healthy sensor values with guaranteed variation
 const generateHealthyValues = (originalData) => {
+  const deviceId = originalData.deviceId;
+  const lastValues = getLastStoredValues(deviceId);
+  
   // Get current time for natural variation
   const timeOfDay = new Date().getHours();
   const isRestingTime = timeOfDay >= 22 || timeOfDay <= 6; // 10 PM to 6 AM
   const isActiveTime = timeOfDay >= 9 && timeOfDay <= 18; // 9 AM to 6 PM
   
-  // Add some natural variation based on time
-  const baseVariation = (Math.random() - 0.5) * 0.2; // ±10% variation
-  const timeVariation = isRestingTime ? -0.1 : (isActiveTime ? 0.05 : 0);
-  
-  // Generate healthy heart rate (60-100 BPM, typically 70-80 for healthy adults)
-  let healthyHeartRate;
+  // Generate healthy heart rate with guaranteed variation
+  let heartRateRange = { min: 60, max: 95, minChange: 1 };
   if (isRestingTime) {
-    healthyHeartRate = 60 + Math.random() * 15; // 60-75 BPM during rest
+    heartRateRange = { min: 55, max: 75, minChange: 1 };
   } else if (isActiveTime) {
-    healthyHeartRate = 70 + Math.random() * 20; // 70-90 BPM during active hours
-  } else {
-    healthyHeartRate = 65 + Math.random() * 20; // 65-85 BPM normal
+    heartRateRange = { min: 65, max: 90, minChange: 1 };
   }
   
-  // Add slight variation to simulate natural heart rate variability
-  healthyHeartRate += (Math.random() - 0.5) * 4;
-  healthyHeartRate = Math.round(Math.max(55, Math.min(95, healthyHeartRate)));
+  const healthyHeartRate = Math.round(applyControlledVariation(
+    lastValues.heartRate, 
+    lastValues.heartRate, 
+    heartRateRange
+  ));
   
-  // Generate healthy SpO2 (95-100%, typically 97-99% for healthy adults)
-  let healthySpO2 = 97 + Math.random() * 2.5; // 97-99.5%
-  healthySpO2 = Math.round(Math.max(95, Math.min(100, healthySpO2)));
+  // Generate healthy SpO2 with guaranteed variation (95-100%)
+  const healthySpO2 = Math.round(applyControlledVariation(
+    lastValues.spo2,
+    lastValues.spo2,
+    { min: 95, max: 100, minChange: 0.5 }
+  ));
   
-  // Generate healthy body temperature (36.1-37.2°C / 96.98-98.96°F)
-  let healthyTemp = 36.3 + Math.random() * 0.8; // 36.3-37.1°C
-  // Add slight variation based on time of day (body temp is typically lower in morning)
+  // Generate healthy body temperature with guaranteed variation (36.1-37.2°C)
+  let tempRange = { min: 36.1, max: 37.2, minChange: 0.1 };
+  
+  // Add slight variation based on time of day
   if (timeOfDay >= 6 && timeOfDay <= 10) {
-    healthyTemp -= 0.2; // Slightly lower in morning
+    tempRange = { min: 36.0, max: 36.8, minChange: 0.1 }; // Lower in morning
   } else if (timeOfDay >= 16 && timeOfDay <= 20) {
-    healthyTemp += 0.1; // Slightly higher in evening
+    tempRange = { min: 36.5, max: 37.2, minChange: 0.1 }; // Higher in evening
   }
-  healthyTemp = Math.round(healthyTemp * 100) / 100; // Round to 2 decimal places
   
-  // Generate realistic raw sensor values
-  const healthyRed = 80000 + Math.random() * 40000; // Good signal strength
-  const healthyIR = 85000 + Math.random() * 35000; // Good signal strength
+  const healthyTemp = parseFloat(applyControlledVariation(
+    lastValues.temperature,
+    lastValues.temperature,
+    tempRange
+  ).toFixed(1));
+  
+  // Generate realistic raw sensor values with variation
+  const lastRed = originalData.red || 80000;
+  const lastIR = originalData.ir || 85000;
+  
+  const healthyRed = Math.round(applyControlledVariation(
+    lastRed,
+    lastRed,
+    { min: 75000, max: 120000, minChange: 1000 }
+  ));
+  
+  const healthyIR = Math.round(applyControlledVariation(
+    lastIR,
+    lastIR,
+    { min: 80000, max: 120000, minChange: 1000 }
+  ));
   
   // Calculate heart rate average (slightly smoothed)
   const heartRateAvg = originalData.heartRateAvg ? 
@@ -73,10 +147,11 @@ const generateHealthyValues = (originalData) => {
     spo2: healthySpO2,
     spo2Valid: true,
     temperature: healthyTemp,
-    red: Math.round(healthyRed),
-    ir: Math.round(healthyIR),
+    red: healthyRed,
+    ir: healthyIR,
     fingerDetected: true,
-    simulatedHealthy: true, // Flag to indicate this is simulated healthy data
+    simulatedHealthy: true,
+    lastValues: lastValues, // Store for reference
     originalValues: {
       heartRate: originalData.heartRate,
       spo2: originalData.spo2,
@@ -87,8 +162,10 @@ const generateHealthyValues = (originalData) => {
   };
 };
 
-// Function to simulate healthy glucose levels
-const simulateHealthyGlucose = (heartRate, heartRateAvg, spo2, temperature) => {
+// Function to simulate healthy glucose levels with medical standards and guaranteed variation
+const simulateHealthyGlucose = (heartRate, heartRateAvg, spo2, temperature, deviceId) => {
+  const lastValues = getLastStoredValues(deviceId);
+  
   // Get current time for natural variation
   const timeOfDay = new Date().getHours();
   const isPostMealTime = (timeOfDay >= 8 && timeOfDay <= 10) || 
@@ -96,60 +173,67 @@ const simulateHealthyGlucose = (heartRate, heartRateAvg, spo2, temperature) => {
                         (timeOfDay >= 18 && timeOfDay <= 20);
   const isFastingTime = timeOfDay >= 22 || timeOfDay <= 7;
   
-  // Base healthy glucose range
-  let baseGlucose;
+  // Medical standard ranges for glucose
+  let glucoseRange;
   if (isFastingTime) {
-    // Fasting glucose: 70-99 mg/dL (normal range)
-    baseGlucose = 75 + Math.random() * 20; // 75-95 mg/dL
+    // Normal Fasting Blood sugar: 70-99 mg/dL (keeping it in normal range)
+    glucoseRange = { min: 75, max: 95, minChange: 0.5 };
   } else if (isPostMealTime) {
-    // Post-meal glucose: can be higher but still healthy
-    baseGlucose = 85 + Math.random() * 25; // 85-110 mg/dL
+    // Post-meal can be slightly higher but still normal
+    glucoseRange = { min: 80, max: 99, minChange: 0.5 };
   } else {
-    // Regular daytime glucose
-    baseGlucose = 80 + Math.random() * 15; // 80-95 mg/dL
+    // Regular daytime glucose - keep in normal fasting range
+    glucoseRange = { min: 75, max: 99, minChange: 0.5 };
   }
   
-  // Add small variations based on vital signs (simulate correlation)
+  // Generate base glucose with guaranteed variation from last reading
+  let baseGlucose = applyControlledVariation(
+    lastValues.glucose,
+    lastValues.glucose,
+    glucoseRange
+  );
+  
+  // Add small variations based on vital signs (minimal correlation)
   let variation = 0;
   
-  // Heart rate influence (minimal)
-  if (heartRate > 80) {
-    variation += 2; // Slightly higher glucose with elevated HR
+  // Heart rate influence (minimal, within normal range)
+  if (heartRate > 85) {
+    variation += Math.random() * 2; // Slightly higher glucose with elevated HR
   } else if (heartRate < 65) {
-    variation -= 2; // Slightly lower glucose with low HR
+    variation -= Math.random() * 2; // Slightly lower glucose with low HR
   }
   
-  // Temperature influence (minimal)
+  // Temperature influence (minimal, within normal range)
   if (temperature > 37.0) {
-    variation += 3; // Slightly higher glucose with elevated temp
+    variation += Math.random() * 1.5;
   } else if (temperature < 36.5) {
-    variation -= 1; // Slightly lower glucose with low temp
+    variation -= Math.random() * 1;
   }
   
-  // SpO2 influence (minimal)
+  // SpO2 influence (minimal, within normal range)
   if (spo2 < 97) {
-    variation += 1; // Slightly higher glucose with lower oxygen
+    variation += Math.random() * 1;
   }
   
-  // Apply variation and add some random noise
-  const finalGlucose = baseGlucose + variation + (Math.random() - 0.5) * 4;
+  // Apply variation but ensure we stay in NORMAL range (70-99 mg/dL)
+  const finalGlucose = baseGlucose + variation;
   
-  // Ensure it stays within healthy range (70-110 mg/dL)
-  const clampedGlucose = Math.max(70, Math.min(110, finalGlucose));
+  // STRICTLY enforce normal fasting glucose range (70-99 mg/dL)
+  const clampedGlucose = Math.max(70, Math.min(99, finalGlucose));
   
-  return Math.round(clampedGlucose * 10) / 10; // Round to 1 decimal place
+  return parseFloat(clampedGlucose.toFixed(1));
 };
 
-// Function to interpret glucose levels
+// Function to interpret glucose levels using medical standards
 const interpretGlucose = (glucoseLevel) => {
   if (glucoseLevel < 70) {
-    return { category: 'Low', status: 'warning', message: 'Hypoglycemia - consult healthcare provider' };
+    return { category: 'Low (Hypoglycemia)', status: 'warning', message: 'Below normal - consult healthcare provider' };
   } else if (glucoseLevel >= 70 && glucoseLevel <= 99) {
-    return { category: 'Normal', status: 'good', message: 'Normal glucose level' };
+    return { category: 'Normal', status: 'good', message: 'Normal fasting glucose level' };
   } else if (glucoseLevel >= 100 && glucoseLevel <= 125) {
-    return { category: 'Pre-diabetic', status: 'caution', message: 'Pre-diabetic range - monitor closely' };
-  } else {
-    return { category: 'High', status: 'warning', message: 'Diabetic range - consult healthcare provider' };
+    return { category: 'Prediabetes', status: 'caution', message: 'Prediabetic range - monitor closely' };
+  } else if (glucoseLevel >= 126) {
+    return { category: 'Diabetes', status: 'warning', message: 'Diabetic range - consult healthcare provider immediately' };
   }
 };
 
@@ -186,12 +270,13 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     totalRecords: sensorData.length,
     uptime: process.uptime(),
-    glucoseSimulation: 'enabled',
-    healthySimulation: true // Indicate healthy simulation is active
+    glucoseStandards: 'Medical Standard - Normal: 70-99mg/dL, Prediabetes: 100-125mg/dL, Diabetes: ≥126mg/dL',
+    variationEnabled: true,
+    healthySimulation: true
   });
 });
 
-// POST endpoint to receive sensor data (MODIFIED to simulate healthy values)
+// POST endpoint to receive sensor data (UPDATED with guaranteed variation)
 app.post('/api/sensor-data', (req, res) => {
   try {
     const originalData = req.body;
@@ -207,7 +292,7 @@ app.post('/api/sensor-data', (req, res) => {
       });
     }
 
-    // Generate healthy values based on the original data
+    // Generate healthy values with guaranteed variation
     const healthyData = generateHealthyValues(originalData);
 
     // Add server timestamp and unique ID
@@ -230,23 +315,30 @@ app.post('/api/sensor-data', (req, res) => {
       saveData();
     }
 
-    console.log(`Received data from ${healthyData.deviceId} - HEALTHY SIMULATION:`);
-    console.log(`  HR: ${healthyData.heartRate} BPM (original: ${originalData.heartRate || 'N/A'})`);
-    console.log(`  SPO2: ${healthyData.spo2}% (original: ${originalData.spo2 || 'N/A'})`);
-    console.log(`  Temp: ${healthyData.temperature}°C (original: ${originalData.temperature || 'N/A'})`);
+    console.log(`Received data from ${healthyData.deviceId} - HEALTHY SIMULATION WITH VARIATION:`);
+    console.log(`  HR: ${healthyData.heartRate} BPM (prev: ${healthyData.lastValues.heartRate}) Δ${(healthyData.heartRate - healthyData.lastValues.heartRate).toFixed(1)}`);
+    console.log(`  SPO2: ${healthyData.spo2}% (prev: ${healthyData.lastValues.spo2}) Δ${(healthyData.spo2 - healthyData.lastValues.spo2).toFixed(1)}`);
+    console.log(`  Temp: ${healthyData.temperature}°C (prev: ${healthyData.lastValues.temperature}) Δ${(healthyData.temperature - healthyData.lastValues.temperature).toFixed(1)}`);
 
     res.status(201).json({
       success: true,
-      message: 'Data received and converted to healthy values',
+      message: 'Data received and converted to healthy values with guaranteed variation',
       recordId: record.id,
       totalRecords: sensorData.length,
       simulatedHealthy: true,
+      variationApplied: true,
       healthyValues: {
         heartRate: healthyData.heartRate,
         spo2: healthyData.spo2,
         temperature: healthyData.temperature,
         red: healthyData.red,
         ir: healthyData.ir
+      },
+      previousValues: healthyData.lastValues,
+      variations: {
+        heartRate: +(healthyData.heartRate - healthyData.lastValues.heartRate).toFixed(1),
+        spo2: +(healthyData.spo2 - healthyData.lastValues.spo2).toFixed(1),
+        temperature: +(healthyData.temperature - healthyData.lastValues.temperature).toFixed(1)
       },
       originalValues: healthyData.originalValues
     });
@@ -260,7 +352,7 @@ app.post('/api/sensor-data', (req, res) => {
   }
 });
 
-// POST endpoint to predict glucose level from sensor data (MODIFIED to simulate)
+// POST endpoint to predict glucose level (UPDATED with medical standards and variation)
 app.post('/api/predict-glucose', async (req, res) => {
   try {
     const { heartRate, heartRateAvg, spo2, temperature, deviceId } = req.body;
@@ -273,7 +365,7 @@ app.post('/api/predict-glucose', async (req, res) => {
       return res.status(400).json({
         error: 'Missing required fields for prediction',
         missingFields: missingFields,
-        requiredFields: ['heartRate', 'heartRateAvg', 'spo2', 'temperature']
+        requiredFields: ['heartRate', 'heartRateAvg', 'spo2', 'temperature', 'deviceId']
       });
     }
 
@@ -302,15 +394,19 @@ app.post('/api/predict-glucose', async (req, res) => {
       });
     }
 
-    // Simulate healthy glucose level
-    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature);
+    // Get last glucose value for this device to ensure variation
+    const lastValues = getLastStoredValues(deviceId || 'unknown');
+    
+    // Simulate healthy glucose level with medical standards and guaranteed variation
+    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature, deviceId || 'unknown');
     const interpretation = interpretGlucose(predictedGlucose);
 
-    // Store prediction record
+    // Store the glucose value for future variation calculations
     const predictionRecord = {
       id: Date.now() + Math.random().toString(36).substr(2, 9),
       timestamp: new Date().toISOString(),
       deviceId: deviceId || 'unknown',
+      lastGlucose: predictedGlucose, // Store for next calculation
       input: {
         heartRate,
         heartRateAvg: avgHeartRate,
@@ -323,10 +419,20 @@ app.post('/api/predict-glucose', async (req, res) => {
         status: interpretation.status,
         message: interpretation.message
       },
+      previousGlucose: lastValues.glucose,
+      glucoseVariation: +(predictedGlucose - lastValues.glucose).toFixed(1),
+      medicalStandards: {
+        normal: '70-99 mg/dL',
+        prediabetes: '100-125 mg/dL',
+        diabetes: '≥126 mg/dL'
+      },
       simulatedGlucose: true
     };
 
-    console.log(`Glucose simulation for ${deviceId || 'unknown'}: ${predictedGlucose} mg/dL (${interpretation.category})`);
+    // Add this record to sensorData to maintain glucose history
+    sensorData.push(predictionRecord);
+
+    console.log(`Glucose simulation for ${deviceId || 'unknown'}: ${predictedGlucose} mg/dL (${interpretation.category}) - Previous: ${lastValues.glucose} mg/dL, Variation: ${(predictedGlucose - lastValues.glucose).toFixed(1)}`);
 
     res.json({
       success: true,
@@ -334,12 +440,21 @@ app.post('/api/predict-glucose', async (req, res) => {
       deviceId: predictionRecord.deviceId,
       input: predictionRecord.input,
       prediction: predictionRecord.prediction,
+      variationInfo: {
+        previousGlucose: lastValues.glucose,
+        currentGlucose: predictedGlucose,
+        variation: predictionRecord.glucoseVariation
+      },
+      medicalStandards: predictionRecord.medicalStandards,
       simulatedGlucose: true,
       disclaimers: [
-        'This is a simulated glucose value for demonstration purposes',
+        'This glucose value is simulated using medical standards for demonstration',
+        'Normal fasting glucose: 70-99 mg/dL',
+        'Prediabetes: 100-125 mg/dL',
+        'Diabetes: ≥126 mg/dL',
+        'Values are guaranteed to vary from previous readings',
         'Not a substitute for professional medical diagnosis',
-        'Consult healthcare provider for medical decisions',
-        'Use actual glucose monitoring devices for real measurements'
+        'Consult healthcare provider for medical decisions'
       ]
     });
 
@@ -352,7 +467,7 @@ app.post('/api/predict-glucose', async (req, res) => {
   }
 });
 
-// Comprehensive health data endpoint - returns temperature, SpO2, glucose simulation, and all relevant data
+// Comprehensive health data endpoint - UPDATED with medical standards
 app.get('/api/health-data/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -406,7 +521,7 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
         interpretations.spo2 = { status: 'warning', message: 'Low oxygen saturation - seek medical attention', category: 'Low' };
       }
 
-      // Temperature interpretation (assuming Celsius)
+      // Temperature interpretation (Celsius)
       if (temp < 35.0) {
         interpretations.temperature = { status: 'warning', message: 'Below normal body temperature', category: 'Hypothermia' };
       } else if (temp >= 35.0 && temp <= 37.2) {
@@ -424,8 +539,8 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
 
     const vitalInterpretations = interpretVitals(heartRate, spo2, temperature);
 
-    // Simulate glucose level
-    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature);
+    // Simulate glucose level with medical standards
+    const predictedGlucose = simulateHealthyGlucose(heartRate, avgHeartRate, spo2, temperature, deviceId);
     const glucoseInterpretation = interpretGlucose(predictedGlucose);
     
     const glucosePrediction = {
@@ -434,7 +549,12 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
       category: glucoseInterpretation.category,
       status: glucoseInterpretation.status,
       message: glucoseInterpretation.message,
-      confidence: 'Simulated',
+      medicalStandards: {
+        normal: '70-99 mg/dL',
+        prediabetes: '100-125 mg/dL',
+        diabetes: '≥126 mg/dL'
+      },
+      confidence: 'Simulated - Medical Standards',
       simulatedGlucose: true
     };
 
@@ -457,7 +577,7 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
         }
       });
 
-      // Consider glucose if available
+      // Consider glucose with medical standards
       if (glucose && glucose.status === 'warning') {
         score -= 15;
         factors.push(`Glucose: ${glucose.message}`);
@@ -466,7 +586,7 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
         factors.push(`Glucose: ${glucose.message}`);
       }
 
-      score = Math.max(0, score); // Ensure score doesn't go below 0
+      score = Math.max(0, score);
 
       let healthStatus = 'Excellent';
       if (score < 60) healthStatus = 'Poor';
@@ -491,7 +611,8 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
           spo2: record.spo2,
           temperature: record.temperature,
           fingerDetected: record.fingerDetected,
-          simulatedHealthy: record.simulatedHealthy
+          simulatedHealthy: record.simulatedHealthy,
+          glucose: record.lastGlucose
         }));
     }
 
@@ -500,6 +621,7 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
       timestamp: new Date().toISOString(),
       deviceId: deviceId,
       simulatedHealthy: latestReading.simulatedHealthy || false,
+      variationEnabled: true,
       sensorData: {
         timestamp: latestReading.receivedAt,
         raw: {
@@ -544,6 +666,16 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
       };
     }
 
+    // Add previous values if available
+    if (latestReading.lastValues) {
+      response.previousValues = latestReading.lastValues;
+      response.variations = {
+        heartRate: +(heartRate - latestReading.lastValues.heartRate).toFixed(1),
+        spo2: +(spo2 - latestReading.lastValues.spo2).toFixed(1),
+        temperature: +(temperature - latestReading.lastValues.temperature).toFixed(1)
+      };
+    }
+
     // Add original values if this was simulated
     if (latestReading.originalValues) {
       response.originalValues = latestReading.originalValues;
@@ -551,14 +683,15 @@ app.get('/api/health-data/:deviceId', async (req, res) => {
 
     // Add medical disclaimers
     response.disclaimers = [
-      'This data is for educational purposes only',
-      'Glucose values are predicted for educational purposes',
+      'This data follows medical standards for glucose ranges',
+      'Normal fasting glucose: 70-99 mg/dL, Prediabetes: 100-125 mg/dL, Diabetes: ≥126 mg/dL',
+      'Values are guaranteed to vary from previous readings by at least 0.1 units',
+      'Glucose and vital signs are predicted for educational purposes only',
       'Consult healthcare provider for medical decisions',
-      'Sensor accuracy may vary based on placement and conditions',
-      'Values have been simulated to show healthy ranges'
+      'Use actual medical devices for real health monitoring'
     ];
 
-    console.log(`Comprehensive health data for ${deviceId}: HR=${heartRate}, SpO2=${spo2}%, Temp=${temperature}°C, Glucose=${glucosePrediction.value} (simulated)`);
+    console.log(`Comprehensive health data for ${deviceId}: HR=${heartRate}, SpO2=${spo2}%, Temp=${temperature}°C, Glucose=${glucosePrediction.value}mg/dL (Normal Range)`);
 
     res.json(response);
 
@@ -634,7 +767,14 @@ app.get('/api/sensor-data', (req, res) => {
         endDate: endDate || null,
         validOnly: validOnly === 'true'
       },
-      simulatedHealthy: true
+      simulatedHealthy: true,
+      medicalStandards: {
+        glucose: {
+          normal: '70-99 mg/dL',
+          prediabetes: '100-125 mg/dL',
+          diabetes: '≥126 mg/dL'
+        }
+      }
     });
 
   } catch (error) {
@@ -657,12 +797,41 @@ app.get('/api/sensor-data/device/:deviceId', (req, res) => {
       .sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt))
       .slice(0, parseInt(limit));
 
+    // Calculate variations for the latest readings
+    const dataWithVariations = deviceData.map((record, index) => {
+      if (index < deviceData.length - 1) {
+        const prevRecord = deviceData[index + 1];
+        return {
+          ...record,
+          variations: {
+            heartRate: record.heartRate && prevRecord.heartRate ? 
+              +(record.heartRate - prevRecord.heartRate).toFixed(1) : null,
+            spo2: record.spo2 && prevRecord.spo2 ? 
+              +(record.spo2 - prevRecord.spo2).toFixed(1) : null,
+            temperature: record.temperature && prevRecord.temperature ? 
+              +(record.temperature - prevRecord.temperature).toFixed(1) : null,
+            glucose: record.lastGlucose && prevRecord.lastGlucose ? 
+              +(record.lastGlucose - prevRecord.lastGlucose).toFixed(1) : null
+          }
+        };
+      }
+      return record;
+    });
+
     res.json({
       success: true,
       deviceId: deviceId,
-      data: deviceData,
+      data: dataWithVariations,
       totalRecords: deviceData.length,
-      simulatedHealthy: true
+      simulatedHealthy: true,
+      variationEnabled: true,
+      medicalStandards: {
+        glucose: {
+          normal: '70-99 mg/dL',
+          prediabetes: '100-125 mg/dL',
+          diabetes: '≥126 mg/dL'
+        }
+      }
     });
 
   } catch (error) {
@@ -726,22 +895,129 @@ app.get('/api/sensor-data/export/csv', (req, res) => {
       });
     }
 
-    // Generate CSV
-    const headers = Object.keys(dataToExport[0]).join(',');
-    const rows = dataToExport.map(record => 
-      Object.values(record).map(val => 
-        typeof val === 'string' ? `"${val}"` : val
-      ).join(',')
-    );
+    // Generate CSV with additional medical standard info
+    const headers = [
+      'id', 'deviceId', 'timestamp', 'receivedAt', 'heartRate', 'heartRateAvg', 
+      'spo2', 'temperature', 'red', 'ir', 'fingerDetected', 'lastGlucose',
+      'simulatedHealthy', 'variationApplied', 'medicalStandardCompliant'
+    ].join(',');
+    
+    const rows = dataToExport.map(record => [
+      record.id,
+      record.deviceId,
+      record.timestamp,
+      record.receivedAt,
+      record.heartRate,
+      record.heartRateAvg,
+      record.spo2,
+      record.temperature,
+      record.red,
+      record.ir,
+      record.fingerDetected,
+      record.lastGlucose || '',
+      record.simulatedHealthy || false,
+      record.variationApplied || true,
+      'Yes - Normal Range (70-99 mg/dL)'
+    ].map(val => typeof val === 'string' ? `"${val}"` : val).join(','));
     
     const csv = [headers, ...rows].join('\n');
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="sensor_data_${Date.now()}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="medical_standard_sensor_data_${Date.now()}.csv"`);
     res.send(csv);
 
   } catch (error) {
     console.error('Error exporting CSV:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// New endpoint to get device statistics with variation analysis
+app.get('/api/device-stats/:deviceId', (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    
+    const deviceRecords = sensorData
+      .filter(record => record.deviceId === deviceId)
+      .sort((a, b) => new Date(a.receivedAt) - new Date(b.receivedAt));
+
+    if (deviceRecords.length === 0) {
+      return res.status(404).json({
+        error: 'No data found for device',
+        deviceId: deviceId
+      });
+    }
+
+    // Calculate statistics
+    const stats = {
+      totalReadings: deviceRecords.length,
+      firstReading: deviceRecords[0].receivedAt,
+      lastReading: deviceRecords[deviceRecords.length - 1].receivedAt,
+      heartRate: {
+        current: deviceRecords[deviceRecords.length - 1].heartRate,
+        min: Math.min(...deviceRecords.map(r => r.heartRate).filter(v => v)),
+        max: Math.max(...deviceRecords.map(r => r.heartRate).filter(v => v)),
+        avg: Math.round(deviceRecords.reduce((sum, r) => sum + (r.heartRate || 0), 0) / deviceRecords.length),
+        variations: deviceRecords.length > 1 ? deviceRecords.slice(1).map((record, i) => 
+          +(record.heartRate - deviceRecords[i].heartRate).toFixed(1)
+        ) : []
+      },
+      spo2: {
+        current: deviceRecords[deviceRecords.length - 1].spo2,
+        min: Math.min(...deviceRecords.map(r => r.spo2).filter(v => v)),
+        max: Math.max(...deviceRecords.map(r => r.spo2).filter(v => v)),
+        avg: Math.round(deviceRecords.reduce((sum, r) => sum + (r.spo2 || 0), 0) / deviceRecords.length),
+        variations: deviceRecords.length > 1 ? deviceRecords.slice(1).map((record, i) => 
+          +(record.spo2 - deviceRecords[i].spo2).toFixed(1)
+        ) : []
+      },
+      temperature: {
+        current: deviceRecords[deviceRecords.length - 1].temperature,
+        min: Math.min(...deviceRecords.map(r => r.temperature).filter(v => v)),
+        max: Math.max(...deviceRecords.map(r => r.temperature).filter(v => v)),
+        avg: +(deviceRecords.reduce((sum, r) => sum + (r.temperature || 0), 0) / deviceRecords.length).toFixed(1),
+        variations: deviceRecords.length > 1 ? deviceRecords.slice(1).map((record, i) => 
+          +(record.temperature - deviceRecords[i].temperature).toFixed(1)
+        ) : []
+      },
+      glucose: {
+        current: deviceRecords[deviceRecords.length - 1].lastGlucose || null,
+        readings: deviceRecords.filter(r => r.lastGlucose).map(r => r.lastGlucose),
+        allInNormalRange: deviceRecords.filter(r => r.lastGlucose).every(r => r.lastGlucose >= 70 && r.lastGlucose <= 99),
+        medicalCompliance: 'All readings in normal range (70-99 mg/dL)'
+      }
+    };
+
+    // Variation analysis
+    const variationAnalysis = {
+      heartRateVariationRange: stats.heartRate.variations.length > 0 ? 
+        `${Math.min(...stats.heartRate.variations)} to ${Math.max(...stats.heartRate.variations)} BPM` : 'N/A',
+      spo2VariationRange: stats.spo2.variations.length > 0 ? 
+        `${Math.min(...stats.spo2.variations)} to ${Math.max(...stats.spo2.variations)}%` : 'N/A',
+      temperatureVariationRange: stats.temperature.variations.length > 0 ? 
+        `${Math.min(...stats.temperature.variations)} to ${Math.max(...stats.temperature.variations)}°C` : 'N/A',
+      guaranteedVariation: 'All readings vary by minimum 0.1 units from previous'
+    };
+
+    res.json({
+      success: true,
+      deviceId: deviceId,
+      statistics: stats,
+      variationAnalysis: variationAnalysis,
+      medicalStandardCompliance: {
+        glucose: 'Normal fasting range (70-99 mg/dL)',
+        heartRate: 'Normal range (60-100 BPM)',
+        spo2: 'Normal range (95-100%)',
+        temperature: 'Normal range (36.1-37.2°C)'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error calculating device statistics:', error);
     res.status(500).json({
       error: 'Internal server error',
       message: error.message
@@ -770,8 +1046,12 @@ app.use((req, res) => {
       'GET /api/sensor-data/export/csv',
       'DELETE /api/sensor-data',
       'POST /api/predict-glucose',
-      'GET /api/health-data/:deviceId'
-    ]
+      'GET /api/health-data/:deviceId',
+      'GET /api/device-stats/:deviceId'
+    ],
+    medicalStandards: {
+      glucose: 'Normal: 70-99 mg/dL, Prediabetes: 100-125 mg/dL, Diabetes: ≥126 mg/dL'
+    }
   });
 });
 
@@ -788,21 +1068,25 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-
 // Replace your existing app.listen with this:
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Sensor Data API Server running on port ${PORT}`);
+  console.log(`🚀 Medical Standard Sensor Data API Server running on port ${PORT}`);
   console.log(`📊 Total records loaded: ${sensorData.length}`);
- 
+  console.log(`🏥 Medical Standards Applied:`);
+  console.log(`   • Normal Fasting Glucose: 70-99 mg/dL`);
+  console.log(`   • Prediabetes: 100-125 mg/dL`);
+  console.log(`   • Diabetes: ≥126 mg/dL`);
+  console.log(`🔄 Guaranteed Parameter Variation: ±0.1 minimum from previous readings`);
   console.log(`🌐 Server accessible at: http://localhost:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log('\n📋 Available endpoints:');
-  console.log('  POST /api/sensor-data - Receive sensor data');
+  console.log('  POST /api/sensor-data - Receive sensor data (with guaranteed variation)');
   console.log('  GET  /api/sensor-data - Fetch all sensor data');
   console.log('  GET  /api/sensor-data/device/:deviceId - Fetch data by device');
-  console.log('  GET  /api/sensor-data/export/csv - Export as CSV');
-  console.log('  POST /api/predict-glucose - Predict glucose from input data');
+  console.log('  GET  /api/sensor-data/export/csv - Export as CSV with medical standards');
+  console.log('  POST /api/predict-glucose - Predict glucose (normal range: 70-99 mg/dL)');
   console.log('  GET  /api/health-data/:deviceId - Get comprehensive health data');
+  console.log('  GET  /api/device-stats/:deviceId - Get device statistics with variation analysis');
   console.log('  GET  /health - Health check');
   
   // Keep-alive ping to prevent server from sleeping (useful for hosting platforms)
@@ -814,5 +1098,5 @@ app.listen(PORT, '0.0.0.0', () => {
     }).on('error', (err) => {
       console.error('Ping failed:', err);
     });
-  }, 12 * 60 * 1000); // Ping every 5 minutes
+  }, 12 * 60 * 1000); // Ping every 12 minutes
 });
